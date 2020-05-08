@@ -1,0 +1,14 @@
+syntax = "proto3";
+package proto;
+
+message Request {
+    string Data = 1;
+}
+
+message Response {
+}
+
+// OOM service demoes how client can overwhelm server
+service OOM {
+    rpc CreateStream(stream Request) returns (Response);
+}
