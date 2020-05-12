@@ -1,8 +1,15 @@
 syntax = "proto3";
 package proto;
 
+
 message Request {
     string Data = 1;
+}
+
+message Wrapper {
+    oneof Req {
+        Request Request = 1;
+    }
 }
 
 message Response {
@@ -10,5 +17,5 @@ message Response {
 
 // OOM service demoes how client can overwhelm server
 service OOM {
-    rpc CreateStream(stream Request) returns (Response);
+    rpc CreateStream(stream Wrapper) returns (Response);
 }
