@@ -44,7 +44,8 @@ func (s *server) CreateStream(stream pb.OOM_CreateStreamServer) error {
 func main() {
 	//mainHTTP()
 	//mainGRPC()
-	mainGRPCRouter()
+	//mainGRPCRouter()
+	mainGRPCMux()
 }
 
 // mainHTTP does not support backpressure
@@ -113,7 +114,8 @@ func mainGRPCMux() {
 		log.Fatalf("failed to listen: %v", err)
 	}
 	mux, err := multiplexer.New(multiplexer.Config{
-		Listener: lis,
+		Listener:   lis,
+		DisableSSH: true,
 	})
 	go mux.Serve()
 	if err != nil {
@@ -126,7 +128,8 @@ func mainGRPCMux() {
 	}
 
 	tlsLis := multiplexer.NewTLSNextProtoListener(
-		tls.NewListener(lis, config))
+		tls.NewListener(mux.TLS(), config))
+	go tlsLis.Serve()
 
 	opts := []grpc.ServerOption{
 		grpc.Creds(&tlsCreds{

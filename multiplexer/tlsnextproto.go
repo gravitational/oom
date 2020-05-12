@@ -44,7 +44,7 @@ func (l *TLSNextProtoListener) HTTP() net.Listener {
 	return l.httpListener
 }
 
-func (l *TLSNextProtoListener) Accept() (net.Conn, error) {
+func (l *TLSNextProtoListener) Serve() error {
 	backoffTimer := time.NewTicker(5 * time.Second)
 	defer backoffTimer.Stop()
 	for {
@@ -52,18 +52,20 @@ func (l *TLSNextProtoListener) Accept() (net.Conn, error) {
 		if err == nil {
 			tlsConn, ok := conn.(*tls.Conn)
 			if !ok {
-				return nil, trace.Wrap(err)
+				conn.Close()
+				log.WithError(err).Error("Expected tls.Conn, got %T, internal usage error.", conn)
+				continue
 			}
 			go l.detectAndForward(tlsConn)
 			continue
 		}
 		if atomic.LoadInt32(&l.isClosed) == 1 {
-			return nil, trace.ConnectionProblem(nil, "listener is closed")
+			return trace.ConnectionProblem(nil, "listener is closed")
 		}
 		select {
 		case <-backoffTimer.C:
 		case <-l.context.Done():
-			return nil, trace.ConnectionProblem(nil, "listener is closed")
+			return trace.ConnectionProblem(nil, "listener is closed")
 		}
 	}
 }
@@ -91,10 +93,17 @@ func (l *TLSNextProtoListener) detectAndForward(conn *tls.Conn) {
 			conn.Close()
 			return
 		}
-	case "http/1.1":
+	case "http/1.1", "":
+		select {
+		case l.httpListener.connC <- conn:
+		case <-l.context.Done():
+			conn.Close()
+			return
+		}
 	default:
 		conn.Close()
-		log.WithError(err).Errorf("detected but unsupported protocol: %v", conn.ConnectionState().NegotiatedProtocol)
+		log.WithError(err).Errorf("unsupported protocol: %v", conn.ConnectionState().NegotiatedProtocol)
+		return
 	}
 }
 

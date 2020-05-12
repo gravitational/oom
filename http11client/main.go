@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	address = "https://localhost:10000"
+	address = "localhost:10000"
 )
 
 func main() {
@@ -18,12 +18,15 @@ func main() {
 		TLSClientConfig: &tls.Config{
 			Certificates: []tls.Certificate{pb.Certificate()},
 			RootCAs:      pb.CertPool(),
+			ServerName:   address,
+			// could be empty or non empty
+			//NextProtos:   []string{"http/1.1"},
 		},
 	}
 	client := &http.Client{
 		Transport: transport,
 	}
-	re, err := client.Get(address)
+	re, err := client.Get("https://" + address)
 	if err != nil {
 		panic(err)
 	}
