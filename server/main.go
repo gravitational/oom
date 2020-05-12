@@ -9,6 +9,8 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
+	"strings"
 	"syscall"
 	"time"
 
@@ -42,34 +44,20 @@ func (s *server) CreateStream(stream pb.OOM_CreateStreamServer) error {
 }
 
 func main() {
-	//mainHTTP()
-	//mainGRPC()
-	//mainGRPCRouter()
-	mainGRPCMux()
-}
-
-// mainHTTP does not support backpressure
-func mainHTTP() {
-	s := grpc.NewServer()
-	pb.RegisterOOMServer(s, &server{})
-	srv := &http.Server{
-		Addr:    port,
-		Handler: s,
-		TLSConfig: &tls.Config{
-			Certificates: []tls.Certificate{pb.Certificate()},
-			NextProtos:   []string{"h2"},
-		},
-	}
-	conn, err := net.Listen("tcp", port)
-	if err != nil {
-		panic(err)
-	}
-	fmt.Printf("grpc with http transport on port: %v\n", port)
-	if err := srv.Serve(tls.NewListener(conn, srv.TLSConfig)); err != nil {
-		log.Fatalf("failed to serve: %v", err)
+	switch os.Args[1] {
+	case "http2":
+		mainHTTP()
+	case "grpc":
+		mainGRPC()
+	case "grpcmux":
+		mainGRPCMux()
+	default:
+		panic(fmt.Errorf("unsupported arg: %v", os.Args[1]))
 	}
 }
 
+// mainGRPC is a straightforward GRPC TLS listener using
+// grpc implementation of HTTP/2
 func mainGRPC() {
 	lis, err := net.Listen("tcp", port)
 	if err != nil {
@@ -80,34 +68,53 @@ func mainGRPC() {
 		grpc.Creds(credentials.NewServerTLSFromCert(&cert))}
 	s := grpc.NewServer(opts...)
 	pb.RegisterOOMServer(s, &server{})
-	fmt.Printf("grpc with native transport on port: %v\n", port)
+	fmt.Printf("grpc with native transport (no multiplexing) on port: %v\n", port)
 	if err := s.Serve(lis); err != nil {
 		log.Fatalf("failed to serve: %v", err)
 	}
 }
 
-func mainGRPCRouter() {
-	lis, err := net.Listen("tcp", port)
+type adapter struct {
+	grpcServer *grpc.Server
+}
+
+func (a *adapter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.ProtoMajor == 2 && strings.Contains(r.Header.Get("Content-Type"), "application/grpc") {
+		a.grpcServer.ServeHTTP(w, r)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+// mainHTTP uses grpc ServeHTTP compatibiltiy handler that allows
+// to use GRPC and HTTP/2 on the same listener, however it has
+// problems with flow control (see README.md)
+func mainHTTP() {
+	adapter := &adapter{
+		grpcServer: grpc.NewServer(),
+	}
+	pb.RegisterOOMServer(adapter.grpcServer, &server{})
+	srv := &http.Server{
+		Addr:    port,
+		Handler: adapter,
+		TLSConfig: &tls.Config{
+			Certificates: []tls.Certificate{pb.Certificate()},
+			NextProtos:   []string{"h2", "http/1.1"},
+		},
+	}
+	conn, err := net.Listen("tcp", port)
 	if err != nil {
-		log.Fatalf("failed to listen: %v", err)
+		panic(err)
 	}
-	config := &tls.Config{
-		Certificates: []tls.Certificate{pb.Certificate()},
-		NextProtos:   []string{http2.NextProtoTLS, "http/1.1"},
-	}
-	tlsLis := tls.NewListener(lis, config)
-	opts := []grpc.ServerOption{
-		grpc.Creds(&tlsCreds{
-			config: config,
-		})}
-	s := grpc.NewServer(opts...)
-	pb.RegisterOOMServer(s, &server{})
-	fmt.Printf("grpc with native transport on port: %v\n", port)
-	if err := s.Serve(tlsLis); err != nil {
+	fmt.Printf("grpc with golang standard library http/2 transport on port: %v\n", port)
+	if err := srv.Serve(tls.NewListener(conn, srv.TLSConfig)); err != nil {
 		log.Fatalf("failed to serve: %v", err)
 	}
 }
 
+// mainGRPCMux multiplexes GRPC and HTTP1/1 using detection
+// after tls.Listener Accept negotiated a handshake
+// and the router looks at the NextNegotiatedProtocol section
 func mainGRPCMux() {
 	lis, err := net.Listen("tcp", port)
 	if err != nil {
@@ -137,7 +144,7 @@ func mainGRPCMux() {
 		})}
 	s := grpc.NewServer(opts...)
 	pb.RegisterOOMServer(s, &server{})
-	fmt.Printf("grpc with native transport on port: %v\n", port)
+	fmt.Printf("grpc with native transport and multiplexing on port: %v\n", port)
 
 	go func() {
 		if err := s.Serve(tlsLis.HTTP2()); err != nil {
